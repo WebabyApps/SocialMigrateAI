@@ -6,14 +6,30 @@ import { MOCK_POSTS, MOCK_USER_NEW, MOCK_USER_OLD } from './services/mockData';
 import { filterPostsWithGemini } from './services/geminiService';
 import { fetchFacebookPosts, fetchFacebookProfile } from './services/facebookService';
 
+// Type definitions for Migration Log
+type MigrationStatus = 'pending' | 'migrating' | 'success' | 'error';
+interface MigrationLogItem {
+  postId: string;
+  contentPreview: string;
+  status: MigrationStatus;
+  error?: string;
+}
+
 const App: React.FC = () => {
   const [step, setStep] = useState<AppStep>(AppStep.LOGIN);
   
   // Connection State
   const [mode, setMode] = useState<'demo' | 'live'>('demo');
-  const [facebookAppId, setFacebookAppId] = useState('');
+  
+  // CHANGED: Load App ID from Environment Variable (Support for Vite, CRA, or plain process.env)
+  // Note: Build tools require variables to start with VITE_ or REACT_APP_ to be exposed to client
+  const facebookAppId = 
+    process.env.FACEBOOK_APP_ID || 
+    process.env.REACT_APP_FACEBOOK_APP_ID || 
+    ((import.meta as any).env && (import.meta as any).env.VITE_FACEBOOK_APP_ID) || 
+    '';
+  
   const [isSdkLoaded, setIsSdkLoaded] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   
   // Auth Method State
   const isSecure = typeof window !== 'undefined' && (window.location.protocol === 'https:' || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
@@ -43,17 +59,14 @@ const App: React.FC = () => {
   
   const [filteredPosts, setFilteredPosts] = useState<Post[]>([]);
   const [selectedPostIds, setSelectedPostIds] = useState<Set<string>>(new Set());
+  
+  // Edit & Preview State
+  const [editablePosts, setEditablePosts] = useState<Post[]>([]);
+  const [migrationLog, setMigrationLog] = useState<MigrationLogItem[]>([]);
 
   // Refs for Speech Recognition
   const recognitionRef = useRef<any>(null);
-
-  // Load App ID from Local Storage on Mount
-  useEffect(() => {
-    const storedAppId = localStorage.getItem('fb_app_id');
-    if (storedAppId) {
-      setFacebookAppId(storedAppId);
-    }
-  }, []);
+  const logContainerRef = useRef<HTMLDivElement>(null);
 
   // Initialize Speech Recognition
   useEffect(() => {
@@ -81,7 +94,7 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // Initialize Facebook SDK when App ID is provided
+  // Initialize Facebook SDK when App ID is provided via Env Var
   useEffect(() => {
     const shouldLoadSdk = facebookAppId && !isSdkLoaded && authMethod === 'auto' && (isSecure || httpsWarningDismissed);
     
@@ -108,17 +121,6 @@ const App: React.FC = () => {
        }(document, 'script', 'facebook-jssdk'));
     }
   }, [facebookAppId, isSdkLoaded, authMethod, isSecure, httpsWarningDismissed]);
-
-  // Handlers
-  const handleSaveSettings = (newAppId: string) => {
-    setFacebookAppId(newAppId);
-    localStorage.setItem('fb_app_id', newAppId);
-    setIsSettingsOpen(false);
-    // Reload page to force SDK re-init if ID changed
-    if (isSdkLoaded) {
-      window.location.reload();
-    }
-  };
 
   const handleMicClick = () => {
     if (isListening) {
@@ -156,9 +158,7 @@ const App: React.FC = () => {
     }
 
     if (!facebookAppId) {
-      setError("System Configuration Error: Facebook App ID is missing. Please contact the administrator.");
-      // If we are in live mode and no ID, open settings for convenience since this is likely the admin testing
-      setIsSettingsOpen(true);
+      setError("Configuration Error: App ID not found. Please set VITE_FACEBOOK_APP_ID or REACT_APP_FACEBOOK_APP_ID in your environment variables.");
       return;
     }
 
@@ -172,14 +172,28 @@ const App: React.FC = () => {
     setError(null);
 
     // Determine scopes based on target
-    // Source: Read posts
-    // Destination: Write permissions (Pages API is the standard for automated posting now)
     const scope = target === 'source' 
       ? 'public_profile,user_posts' 
       : 'public_profile,pages_manage_posts,pages_read_engagement,publish_pages';
+    
+    // If switching targets, logout first to force account switch
+    if ((target === 'destination' && oldConnected) || (target === 'source' && newConnected)) {
+      try {
+        window.FB.logout(() => {
+          console.log("Logged out previous session for context switch");
+          triggerLogin(target, scope);
+        });
+        return;
+      } catch (e) {
+        console.warn("Logout failed or no session, proceeding to login", e);
+      }
+    }
 
+    triggerLogin(target, scope);
+  };
+
+  const triggerLogin = (target: 'source' | 'destination', scope: string) => {
     try {
-      // Use reauthenticate to force user to pick/switch accounts if needed
       window.FB.login((response: FacebookLoginStatus) => {
         if (response.status === 'connected' && response.authResponse) {
           const token = response.authResponse.accessToken;
@@ -202,7 +216,7 @@ const App: React.FC = () => {
       setError("Failed to trigger Facebook Login. Popups might be blocked.");
       setIsLoadingAuth(false);
     }
-  };
+  }
 
   const fetchRealData = async (token: string, target: 'source' | 'destination') => {
     if (!token) {
@@ -277,27 +291,70 @@ const App: React.FC = () => {
     }
   };
 
-  const handleStartMigration = () => {
+  const handleProceedToPreview = () => {
+    const selected = filteredPosts.filter(p => selectedPostIds.has(p.id));
+    // Create a deep copy to allow editing without affecting original data until migration
+    setEditablePosts(JSON.parse(JSON.stringify(selected)));
+    setStep(AppStep.EDIT_PREVIEW);
+  };
+
+  const handleUpdatePost = (id: string, field: 'content' | 'imageUrl', value: string | undefined) => {
+    setEditablePosts(prev => prev.map(post => {
+      if (post.id === id) {
+        return { ...post, [field]: value };
+      }
+      return post;
+    }));
+  };
+
+  const handleStartMigration = async () => {
     setStep(AppStep.MIGRATING);
     setIsMigrating(true);
     setMigrationProgress(0);
 
-    const total = selectedPostIds.size;
-    let completed = 0;
-    
-    const interval = setInterval(() => {
-      completed += 1;
-      const pct = Math.min((completed / total) * 100, 100);
-      setMigrationProgress(pct);
+    // Initialize Migration Log
+    const initialLog: MigrationLogItem[] = editablePosts.map(p => ({
+      postId: p.id,
+      contentPreview: p.content || (p.imageUrl ? 'Photo Post' : 'Untitled Post'),
+      status: 'pending'
+    }));
+    setMigrationLog(initialLog);
 
-      if (completed >= total) {
-        clearInterval(interval);
-        setTimeout(() => {
-          setIsMigrating(false);
-          setStep(AppStep.COMPLETED);
-        }, 800);
+    let completed = 0;
+
+    for (const post of editablePosts) {
+      // 1. Mark as migrating
+      setMigrationLog(prev => prev.map(item => 
+        item.postId === post.id ? { ...item, status: 'migrating' } : item
+      ));
+
+      // Auto scroll to latest item
+      if (logContainerRef.current) {
+        logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
       }
-    }, 800); 
+
+      // 2. Simulate API Network Delay (API call to Graph API would go here)
+      await new Promise(resolve => setTimeout(resolve, 1200 + Math.random() * 500));
+
+      // 3. Complete (with random chance of failure for demo purposes)
+      const isSuccess = Math.random() > 0.05; // 95% success rate
+
+      setMigrationLog(prev => prev.map(item => 
+        item.postId === post.id ? { 
+          ...item, 
+          status: isSuccess ? 'success' : 'error',
+          error: isSuccess ? undefined : 'Connection timed out'
+        } : item
+      ));
+
+      completed++;
+      setMigrationProgress((completed / editablePosts.length) * 100);
+    }
+
+    // Allow user to see final state briefly before completing
+    await new Promise(resolve => setTimeout(resolve, 800));
+    setIsMigrating(false);
+    setStep(AppStep.COMPLETED);
   };
 
   const resetApp = () => {
@@ -305,49 +362,12 @@ const App: React.FC = () => {
     setFilterText('');
     setFilteredPosts([]);
     setSelectedPostIds(new Set());
+    setEditablePosts([]);
     setMigrationProgress(0);
+    setMigrationLog([]);
   };
 
   // --- RENDER COMPONENTS ---
-
-  const renderAdminModal = () => {
-    if (!isSettingsOpen) return null;
-    return (
-      <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-        <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="text-lg font-bold text-gray-800">Administrator Settings</h3>
-            <button onClick={() => setIsSettingsOpen(false)} className="text-gray-400 hover:text-gray-600">
-              <i className="fas fa-times"></i>
-            </button>
-          </div>
-          
-          <p className="text-sm text-gray-600 mb-4 bg-yellow-50 p-3 rounded border border-yellow-100">
-            <i className="fas fa-lock mr-2 text-yellow-500"></i>
-            This panel is for administrators only. Configure the Facebook App ID here so standard users can log in.
-          </p>
-
-          <div className="mb-4">
-            <label className="block text-xs font-bold text-facebook-blue mb-1">Facebook App ID</label>
-            <input 
-              type="text" 
-              defaultValue={facebookAppId}
-              placeholder="e.g., 1234567890"
-              className="w-full p-2 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-facebook-blue outline-none"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleSaveSettings((e.target as HTMLInputElement).value);
-              }}
-              onBlur={(e) => handleSaveSettings(e.target.value)}
-            />
-          </div>
-          
-          <div className="flex justify-end">
-            <Button onClick={() => setIsSettingsOpen(false)}>Close & Save</Button>
-          </div>
-        </div>
-      </div>
-    );
-  };
 
   const renderLogin = () => {
     // Show auth panel if in Live mode AND (Current target is not connected)
@@ -358,15 +378,6 @@ const App: React.FC = () => {
 
     return (
       <div className="max-w-md mx-auto mt-10 p-8 bg-white rounded-xl shadow-lg border border-gray-100 relative">
-        {/* Admin Gear Icon */}
-        <button 
-          onClick={() => setIsSettingsOpen(true)}
-          className="absolute top-4 right-4 text-gray-300 hover:text-gray-500 transition-colors"
-          title="Admin Settings"
-        >
-          <i className="fas fa-cog"></i>
-        </button>
-
         <div className="flex justify-between items-center mb-6 pr-8">
           <h1 className="text-2xl font-bold text-facebook-blue">SocialMigrate AI</h1>
         </div>
@@ -399,9 +410,6 @@ const App: React.FC = () => {
                {connectingTarget === 'source' ? '1. Connect Old Account (Source)' : '2. Connect New Account (Destination)'}
              </div>
              
-             {/* Tab Switcher - Only needed for Manual override fallback */}
-             {/* If not secure, we show manual fallback or HTTPS switch. If secure, we show login. */}
-
              {/* Insecure Connection Blocker for Auto Mode */}
              {!isSecure && authMethod === 'auto' ? (
                <div className="bg-red-50 border border-red-100 p-4 rounded-lg text-center">
@@ -699,11 +707,11 @@ const App: React.FC = () => {
             Select All
           </label>
           <Button 
-            onClick={handleStartMigration}
+            onClick={handleProceedToPreview}
             disabled={selectedPostIds.size === 0}
-            icon={<i className="fas fa-rocket"></i>}
+            icon={<i className="fas fa-edit"></i>}
           >
-            Migrate {selectedPostIds.size} Posts
+            Preview & Edit ({selectedPostIds.size})
           </Button>
         </div>
       </div>
@@ -730,25 +738,140 @@ const App: React.FC = () => {
     </div>
   );
 
+  const renderEditPreview = () => (
+    <div className="max-w-3xl mx-auto mt-8 px-4 mb-24">
+      <div className="flex items-center justify-between mb-8">
+        <div>
+           <h2 className="text-2xl font-bold text-gray-900">Preview & Edit</h2>
+           <p className="text-gray-500 text-sm">Review how these posts will look on your new timeline.</p>
+        </div>
+        <Button variant="secondary" onClick={() => setStep(AppStep.REVIEW)}>
+          Back to Selection
+        </Button>
+      </div>
+
+      <div className="space-y-6">
+        {editablePosts.map((post) => (
+          <div key={post.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+            {/* Mock New User Header */}
+            <div className="flex items-center gap-3 mb-4">
+               <img src={destinationUser.avatar} alt="New" className="w-10 h-10 rounded-full border border-gray-200" />
+               <div>
+                  <div className="font-bold text-gray-900">{destinationUser.name}</div>
+                  <div className="text-xs text-gray-400">Just now <i className="fas fa-globe-americas ml-1"></i></div>
+               </div>
+            </div>
+
+            {/* Editable Content */}
+            <div className="mb-4">
+               <label className="block text-xs font-semibold text-gray-400 mb-1 uppercase tracking-wider">Caption</label>
+               <textarea 
+                  className="w-full p-3 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-facebook-blue focus:border-transparent outline-none resize-none bg-gray-50"
+                  rows={3}
+                  value={post.content}
+                  onChange={(e) => handleUpdatePost(post.id, 'content', e.target.value)}
+               />
+            </div>
+
+            {/* Editable Image */}
+            {post.imageUrl && (
+               <div className="relative group rounded-lg overflow-hidden bg-gray-100 border border-gray-200">
+                  <img src={post.imageUrl} alt="Preview" className="w-full max-h-64 object-cover" />
+                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                     <button 
+                       onClick={() => handleUpdatePost(post.id, 'imageUrl', undefined)}
+                       className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-full text-sm font-medium shadow-lg transform scale-95 group-hover:scale-100 transition-transform"
+                     >
+                       <i className="fas fa-trash-alt mr-2"></i> Remove Photo
+                     </button>
+                  </div>
+               </div>
+            )}
+            
+            {/* Removed Image Placeholder */}
+            {!post.imageUrl && (
+               <div className="p-4 bg-gray-50 border border-dashed border-gray-300 rounded-lg text-center text-gray-400 text-xs">
+                 No image attached
+               </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Floating Footer Action */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-4 z-50">
+         <div className="max-w-3xl mx-auto flex justify-between items-center">
+            <span className="text-gray-500 text-sm hidden sm:block">
+               Ready to migrate <strong>{editablePosts.length}</strong> posts
+            </span>
+            <Button 
+               onClick={handleStartMigration}
+               className="w-full sm:w-auto shadow-xl shadow-blue-500/20"
+               icon={<i className="fas fa-rocket"></i>}
+            >
+               Confirm & Start Migration
+            </Button>
+         </div>
+      </div>
+    </div>
+  );
+
   const renderMigrating = () => (
-    <div className="fixed inset-0 bg-white z-50 flex flex-col items-center justify-center p-8">
-      <div className="w-full max-w-md text-center">
-        <div className="mb-8 relative">
-          <div className="w-24 h-24 bg-blue-50 rounded-full mx-auto flex items-center justify-center animate-pulse">
-            <i className="fas fa-sync fa-spin text-4xl text-facebook-blue"></i>
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex flex-col items-center justify-center p-4">
+      <div className="w-full max-w-lg bg-white rounded-xl shadow-2xl border border-gray-100 overflow-hidden flex flex-col max-h-[80vh]">
+        
+        {/* Header */}
+        <div className="p-6 border-b border-gray-100 bg-gray-50">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-xl font-bold text-gray-900">Migrating Posts...</h2>
+            <span className="text-sm font-medium text-facebook-blue">
+              {Math.round(migrationProgress)}%
+            </span>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+            <div 
+              className="bg-facebook-blue h-full transition-all duration-300 ease-out"
+              style={{ width: `${migrationProgress}%` }}
+            ></div>
           </div>
         </div>
-        
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Migrating Posts...</h2>
-        <p className="text-gray-500 mb-8">Moving memories to {destinationUser.name}</p>
 
-        <div className="w-full bg-gray-100 rounded-full h-4 overflow-hidden mb-4">
-          <div 
-            className="bg-facebook-blue h-full transition-all duration-300 ease-out"
-            style={{ width: `${migrationProgress}%` }}
-          ></div>
+        {/* Scrollable Log */}
+        <div ref={logContainerRef} className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50/50">
+          {migrationLog.map((item) => (
+            <div 
+              key={item.postId} 
+              className={`flex items-center gap-3 p-3 rounded-lg border transition-all duration-200 ${
+                item.status === 'migrating' 
+                  ? 'bg-white border-blue-200 shadow-sm scale-[1.02]' 
+                  : 'bg-white border-gray-100 opacity-90'
+              }`}
+            >
+              {/* Status Icon */}
+              <div className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-full bg-gray-50 border border-gray-100">
+                {item.status === 'pending' && <div className="w-2 h-2 bg-gray-300 rounded-full" />}
+                {item.status === 'migrating' && <i className="fas fa-circle-notch fa-spin text-facebook-blue"></i>}
+                {item.status === 'success' && <i className="fas fa-check text-green-500"></i>}
+                {item.status === 'error' && <i className="fas fa-times text-red-500"></i>}
+              </div>
+              
+              {/* Content */}
+              <div className="flex-1 min-w-0">
+                <p className={`text-sm truncate ${item.status === 'pending' ? 'text-gray-400' : 'text-gray-700'}`}>
+                  {item.contentPreview}
+                </p>
+                {item.status === 'migrating' && <p className="text-xs text-facebook-blue animate-pulse">Publishing...</p>}
+                {item.status === 'success' && <p className="text-xs text-green-600">Successfully published</p>}
+                {item.status === 'error' && <p className="text-xs text-red-500">Failed: {item.error}</p>}
+              </div>
+            </div>
+          ))}
         </div>
-        <p className="text-sm text-gray-400 font-mono">{Math.round(migrationProgress)}% Complete</p>
+
+        {/* Footer */}
+        <div className="p-4 border-t border-gray-100 bg-white text-center text-xs text-gray-400">
+            Please do not close this window
+        </div>
       </div>
     </div>
   );
@@ -761,7 +884,7 @@ const App: React.FC = () => {
       
       <h2 className="text-2xl font-bold text-gray-900 mb-2">Migration Complete!</h2>
       <p className="text-gray-600 mb-8">
-        Processed <span className="font-bold">{selectedPostIds.size}</span> posts.
+        Processed <span className="font-bold">{editablePosts.length}</span> posts.
         {mode === 'live' && (
           <span className="block mt-2 text-xs text-amber-600 bg-amber-50 p-2 rounded">
             Note: Content has been prepared for migration. 
@@ -781,7 +904,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen pb-10 bg-facebook-bg">
-      {renderAdminModal()}
+      {/* Removed Admin Modal */}
       
       {/* Header */}
       {step !== AppStep.MIGRATING && (
@@ -809,6 +932,7 @@ const App: React.FC = () => {
         {step === AppStep.LOGIN && renderLogin()}
         {step === AppStep.FILTER_INPUT && renderFilterInput()}
         {step === AppStep.REVIEW && renderReview()}
+        {step === AppStep.EDIT_PREVIEW && renderEditPreview()}
         {step === AppStep.MIGRATING && renderMigrating()}
         {step === AppStep.COMPLETED && renderCompleted()}
       </main>

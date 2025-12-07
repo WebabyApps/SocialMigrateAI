@@ -11,6 +11,7 @@ export enum AppStep {
   LOGIN = 'LOGIN',
   FILTER_INPUT = 'FILTER_INPUT',
   REVIEW = 'REVIEW',
+  EDIT_PREVIEW = 'EDIT_PREVIEW',
   MIGRATING = 'MIGRATING',
   COMPLETED = 'COMPLETED'
 }
@@ -57,6 +58,7 @@ declare global {
       ) => void;
       api: (path: string, callback: (response: any) => void) => void;
       getLoginStatus: (callback: (response: FacebookLoginStatus) => void) => void;
+      logout: (callback: (response: any) => void) => void;
     };
   }
 }
