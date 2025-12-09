@@ -1,42 +1,63 @@
-name: iOS CI/CD Build
+name: React Web App CI/CD Deploy
 
 on:
   push:
     branches:
-      - main
+      - main # Uruchamiany przy każdym pushu do gałęzi main
 
 jobs:
-  build_and_test:
-    runs-on: macos-latest
-
+  build_and_deploy:
+    # Używamy maszyny Linux (Ubuntu) do budowania aplikacji webowej, jest to szybsze i tańsze niż macOS
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 1. Konfiguracja Xcode:
-      - name: Use Default Latest Xcode
-        run: echo "Używamy domyślnej, najnowszej wersji Xcode na runnerze macos-latest."
+      # Krok 1: Konfiguracja i Cache Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20' # Upewnij się, że to jest wersja używana w Twoim projekcie
+          cache: 'npm'       # Włączenie cachowania zależności (znacznie przyspiesza buildy)
+
+      # Krok 2: Instalacja zależności
+      - name: Install Dependencies
+        run: npm install
+
+      # Krok 3: Budowanie aplikacji React (Kluczowy krok CI)
+      - name: Build React Application
+        run: npm run build
+        # Aplikacja React zostanie skompilowana do katalogu 'build' lub 'dist'
         
-      # 2. Instalacja zależności
-      - name: Install Dependencies (CocoaPods)
-        run: pod install
-        working-directory: ./SocialMigrateAI
+      # Krok 4: Przesyłanie skompilowanych plików na VPS (Deployment - CD)
+      # Używamy rsync do wydajnego wgrywania tylko zmienionych plików
+      - name: Deploy with rsync to OVH VPS
+        uses: easingthemes/ssh-deploy@main
+        with:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          REMOTE_HOST: ${{ secrets.SSH_HOST }}
+          REMOTE_USER: ${{ secrets.SSH_USER }}
+          
+          # 🚨 SKĄD: Katalog wyjściowy po buildzie Reacta (najczęściej 'build')
+          SOURCE: "build/"
+          # 🚨 DOKĄD: Katalog, który serwuje Twój webserwer (np. Nginx/Apache)
+          TARGET: ${{ secrets.SSH_TARGET_DIR }}
+          
+          # Opcja 'exclude' i 'args' są bardzo ważne dla bezpiecznego deploymentu
+          ARGS: "--delete" # Usuwa pliki na serwerze, które zostały usunięte w repo
 
-      # 3. Budowanie Projektu (Uzupełniona nazwa Schematu)
-      - name: Build iOS App
-        run: |
-          xcodebuild clean build \
-          -project "socialmigrateai.xcodeproj" \
-          -scheme "SocialMigrateAI" \
-          -destination 'platform=iOS Simulator,name=iPhone 15' 
-        working-directory: ./SocialMigrateAI
-
-      # 4. Testy (Uzupełniona nazwa Schematu)
-      - name: Run Tests
-        run: |
-          xcodebuild test \
-          -project "socialmigrateai.xcodeproj" \
-          -scheme "SocialMigrateAI" \
-          -destination 'platform=iOS Simulator,name=iPhone 15'  
-        working-directory: ./SocialMigrateAI
+      # Krok 5: Skrypty po wgraniu (Opcjonalne, jeśli masz backend Node.js)
+      # Ten krok jest potrzebny TYLKO, jeśli masz backend Node.js, który musisz zrestartować.
+      - name: Run post-deployment scripts (if needed)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            # Puste, jeśli to tylko statyczny React.
+            echo "Deployment statycznej aplikacji React zakończony."
+            # Jeśli masz backend Node.js (np. Express):
+            # cd /sciezka/do/backendu
+            # pm2 restart nazwa-twojego-backendu || true
