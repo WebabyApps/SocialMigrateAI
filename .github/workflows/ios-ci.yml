@@ -7,57 +7,55 @@ on:
 
 jobs:
   build_and_deploy:
-    # Używamy maszyny Linux (Ubuntu) do budowania aplikacji webowej, jest to szybsze i tańsze niż macOS
+    # Używamy maszyny Linux (Ubuntu) do budowania aplikacji webowej
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
+      - name: 1. Checkout Code
         uses: actions/checkout@v4
 
-      # Krok 1: Konfiguracja i Cache Node.js
-      - name: Setup Node.js
+      # Krok 2: Konfiguracja Node.js
+      - name: 2. Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20' # Upewnij się, że to jest wersja używana w Twoim projekcie
-          cache: 'npm'       # Włączenie cachowania zależności (znacznie przyspiesza buildy)
+          node-version: '20'
+          cache: 'npm'
 
-      # Krok 2: Instalacja zależności
-      - name: Install Dependencies
+      # Krok 3: Instalacja zależności
+      # Aktywujemy working-directory, aby wejść do katalogu z plikiem package.json
+      - name: 3. Install Dependencies
         run: npm install
+        working-directory: SocialMigrateAI
 
-      # Krok 3: Budowanie aplikacji React (Kluczowy krok CI)
-      - name: Build React Application
+      # Krok 4: Budowanie aplikacji React (Tworzenie katalogu 'build')
+      - name: 4. Build React Application
         run: npm run build
-        # Aplikacja React zostanie skompilowana do katalogu 'build' lub 'dist'
+        working-directory: SocialMigrateAI
         
-      # Krok 4: Przesyłanie skompilowanych plików na VPS (Deployment - CD)
-      # Używamy rsync do wydajnego wgrywania tylko zmienionych plików
-      - name: Deploy with rsync to OVH VPS
+      # Krok 5: Przesyłanie skompilowanych plików na VPS (Deployment)
+      - name: 5. Deploy 'build' Directory via rsync to OVH VPS
         uses: easingthemes/ssh-deploy@main
         with:
+          # Dane logowania pobrane z GitHub Secrets
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           REMOTE_HOST: ${{ secrets.SSH_HOST }}
           REMOTE_USER: ${{ secrets.SSH_USER }}
           
-          # 🚨 SKĄD: Katalog wyjściowy po buildzie Reacta (najczęściej 'build')
-          SOURCE: "build/"
-          # 🚨 DOKĄD: Katalog, który serwuje Twój webserwer (np. Nginx/Apache)
+          # SKĄD: Katalog 'build' utworzony w kroku 4. (Ścieżka jest względna do working-directory!)
+          SOURCE: "SocialMigrateAI/build/"
+          # DOKĄD: Katalog docelowy na serwerze (np. /var/www/webaby-page/)
           TARGET: ${{ secrets.SSH_TARGET_DIR }}
           
-          # Opcja 'exclude' i 'args' są bardzo ważne dla bezpiecznego deploymentu
-          ARGS: "--delete" # Usuwa pliki na serwerze, które zostały usunięte w repo
+          ARGS: "--delete" # Usuwa stare, niepotrzebne pliki na serwerze
 
-      # Krok 5: Skrypty po wgraniu (Opcjonalne, jeśli masz backend Node.js)
-      # Ten krok jest potrzebny TYLKO, jeśli masz backend Node.js, który musisz zrestartować.
-      - name: Run post-deployment scripts (if needed)
+      # Krok 6: Opcjonalne skrypty po deploymentu (np. restart Node.js/serwera)
+      - name: 6. Run post-deployment scripts (if needed)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            # Puste, jeśli to tylko statyczny React.
-            echo "Deployment statycznej aplikacji React zakończony."
-            # Jeśli masz backend Node.js (np. Express):
-            # cd /sciezka/do/backendu
+            echo "Deployment statycznej aplikacji React zakończony na ${SSH_TARGET_DIR}."
+            # Jeśli masz serwer Node.js, który musisz restartować, umieść tu komendę, np:
             # pm2 restart nazwa-twojego-backendu || true
