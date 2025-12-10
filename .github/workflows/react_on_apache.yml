@@ -83,7 +83,10 @@ jobs:
 
           SRC_DIR="./build_artifact"
           echo "Kopiuję z: $SRC_DIR do: $SSH_TARGET_DIR"
-          rsync -avz --delete "$SRC_DIR"/ target:"$SSH_TARGET_DIR"
+          rsync -avz --delete \
+            --omit-dir-times --no-perms --no-owner --no-group \
+            --exclude='.well-known/' \
+            "$SRC_DIR"/ target:"$SSH_TARGET_DIR"
 
       - name: Reload Apache
         run: |
