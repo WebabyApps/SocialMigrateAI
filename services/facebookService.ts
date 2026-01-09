@@ -1,4 +1,4 @@
-import { Post, UserProfile } from '../types';
+import { Post, UserProfile, FacebookPage } from '../types';
 
 export const fetchFacebookProfile = async (accessToken: string): Promise<UserProfile> => {
   const response = await fetch(`https://graph.facebook.com/v19.0/me?fields=id,name,picture.type(large)&access_token=${accessToken}`);
@@ -13,15 +13,31 @@ export const fetchFacebookProfile = async (accessToken: string): Promise<UserPro
   };
 };
 
-export const fetchFacebookPosts = async (accessToken: string): Promise<Post[]> => {
-  // Fetch user feed. Limit to 50 for this demo to ensure speed.
+export const fetchManagedPages = async (userAccessToken: string): Promise<FacebookPage[]> => {
+  // Fetch pages the user manages and get their specific Page Access Tokens
+  // Requires 'pages_show_list' permission
   const response = await fetch(
-    `https://graph.facebook.com/v19.0/me/feed?fields=id,message,created_time,full_picture,likes.summary(true),from&limit=50&access_token=${accessToken}`
+    `https://graph.facebook.com/v19.0/me/accounts?fields=id,name,access_token,picture&access_token=${userAccessToken}`
+  );
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(errorData.error?.message || 'Failed to fetch managed pages');
+  }
+
+  const data = await response.json();
+  return data.data || [];
+};
+
+export const fetchFacebookPosts = async (accessToken: string, endpoint: string = 'me/feed'): Promise<Post[]> => {
+  // Fetch feed (either user feed 'me/feed' or page feed '{pageId}/feed')
+  const response = await fetch(
+    `https://graph.facebook.com/v19.0/${endpoint}?fields=id,message,created_time,full_picture,likes.summary(true),from&limit=50&access_token=${accessToken}`
   );
   
   if (!response.ok) {
     const errorData = await response.json();
-    throw new Error(errorData.error?.message || 'Failed to fetch Facebook posts');
+    throw new Error(errorData.error?.message || 'Failed to fetch posts');
   }
 
   const data = await response.json();
@@ -35,6 +51,6 @@ export const fetchFacebookPosts = async (accessToken: string): Promise<Post[]> =
       date: new Date(item.created_time).toISOString().split('T')[0],
       likes: item.likes?.summary?.total_count || 0,
       imageUrl: item.full_picture,
-      originalAuthor: item.from?.name || 'Me'
+      originalAuthor: item.from?.name || 'Unknown'
     }));
 };

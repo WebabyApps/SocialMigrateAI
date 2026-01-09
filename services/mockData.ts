@@ -1,4 +1,4 @@
-import { Post } from '../types';
+import { Post, FacebookPage } from '../types';
 
 export const MOCK_USER_OLD = {
   name: "Alex Doe (Old)",
@@ -11,6 +11,33 @@ export const MOCK_USER_NEW = {
   avatar: "https://picsum.photos/id/65/100/100",
   handle: "@alex_doe_official"
 };
+
+export const MOCK_MANAGED_PAGES: FacebookPage[] = [
+  {
+    id: 'page_demo_1',
+    name: "Alex's Photography Studio",
+    access_token: 'mock_token_1',
+    picture: {
+      data: { url: "https://picsum.photos/id/250/100/100" }
+    }
+  },
+  {
+    id: 'page_demo_2',
+    name: "Vintage Car Enthusiasts",
+    access_token: 'mock_token_2',
+    picture: {
+      data: { url: "https://picsum.photos/id/111/100/100" }
+    }
+  },
+  {
+    id: 'page_demo_3',
+    name: "Downtown Foodie Reviews",
+    access_token: 'mock_token_3',
+    picture: {
+      data: { url: "https://picsum.photos/id/292/100/100" }
+    }
+  }
+];
 
 export const MOCK_POSTS: Post[] = [
   {

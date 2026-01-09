@@ -16,6 +16,8 @@ export enum AppStep {
   COMPLETED = 'COMPLETED'
 }
 
+export type MigrationMode = 'PROFILE_TO_PAGE' | 'PAGE_TO_PAGE';
+
 export interface FilterResult {
   relevantPostIds: string[];
   reasoning?: string;
@@ -26,6 +28,18 @@ export interface UserProfile {
   name: string;
   avatar: string;
   handle: string;
+}
+
+// Interface for Facebook Pages
+export interface FacebookPage {
+  id: string;
+  name: string;
+  access_token: string;
+  picture?: {
+    data: {
+      url: string;
+    }
+  };
 }
 
 // Facebook SDK Types

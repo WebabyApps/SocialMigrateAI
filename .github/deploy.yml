@@ -1,0 +1,78 @@
+name: Build and Deploy React to Apache (socialmigrateai)
+
+on:
+  push:
+    branches: [ "main" ]   # albo inna gałąź, z której chcesz deployować
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: react-build
+          path: |
+            build
+            dist
+          if-no-files-found: ignore
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: react-build
+          path: ./build_artifact
+
+      - name: Install rsync and ssh client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync openssh-client
+
+      - name: Prepare SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf "Host target\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_deploy\n  StrictHostKeyChecking no\n" \
+            "${{ secrets.SSH_HOST }}" "${{ secrets.SSH_USER }}" "${{ secrets.SSH_PORT }}" > ~/.ssh/config
+
+      - name: Deploy build to server via rsync
+        env:
+          SSH_TARGET_DIR: ${{ secrets.SSH_TARGET_DIR }}
+        run: |
+          # Wybierz build/ (CRA) albo dist/ (Vite)
+          if [ -d "./build_artifact/build" ]; then
+            SRC_DIR="./build_artifact/build/"
+          elif [ -d "./build_artifact/dist" ]; then
+            SRC_DIR="./build_artifact/dist/"
+          else
+            echo "Brak katalogu build ani dist w artefakcie" && exit 1
+          fi
+
+          # Wrzucenie plików do katalogu docelowego na serwerze
+          rsync -avz --delete "$SRC_DIR" target:"$SSH_TARGET_DIR"
+
+      - name: (Optional) Reload Apache
+        run: |
+          ssh target "sudo systemctl reload apache2 || sudo systemctl restart apache2"

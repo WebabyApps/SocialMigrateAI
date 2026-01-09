@@ -40,7 +40,8 @@ jobs:
           # Opcjonalnie mapowanie pod bundlery:
           VITE_FACEBOOK_APP_ID: ${{ secrets.FACEBOOK_APP_ID }}
           REACT_APP_FACEBOOK_APP_ID: ${{ secrets.FACEBOOK_APP_ID }}
-
+          FACEBOOK_APP_ID_CONSUMER: ${{ secrets.FACEBOOK_APP_ID_CONSUMER }}
+          FACEBOOK_APP_ID_BUSINESS: ${{ secrets.FACEBOOK_APP_ID_BUSINESS }}
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
