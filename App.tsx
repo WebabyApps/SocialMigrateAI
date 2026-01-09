@@ -25,8 +25,7 @@ const App: React.FC = () => {
   const t = getTranslation(lang);
 
   // --- ENVIRONMENT VARIABLES ---
-  // Consumer ID: For reading Personal Profiles (user_posts)
-  const appIdConsumer = 
+ const appIdConsumer = 
     process.env.FACEBOOK_APP_ID_CONSUMER || 
     process.env.REACT_APP_FACEBOOK_APP_ID_CONSUMER || 
     ((import.meta as any).env && (import.meta as any).env.VITE_FACEBOOK_APP_ID_CONSUMER) || 
@@ -128,27 +127,63 @@ const App: React.FC = () => {
   const prepareConnection = (target: 'source' | 'destination') => {
     setError(null);
     let requiredId = target === 'source' ? (migrationMode === 'PROFILE_TO_PAGE' ? appIdConsumer : appIdBusiness) : appIdBusiness;
+    
     if (!requiredId) {
-      setError(`Brak ID Aplikacji dla ${target}. Sprawdź plik .env (Consumer dla Profilu, Business dla Stron).`);
+      setError(lang === 'pl' ? `Brak ID Aplikacji dla ${target}.` : `Missing App ID for ${target}.`);
       return;
     }
-    if (currentAppId !== requiredId) initSdk(requiredId);
-    setTimeout(() => handleFacebookLogin(target), 200);
+
+    // If switching apps, we might need a logout to clear the token
+    if (currentAppId !== '' && currentAppId !== requiredId && (window as any).FB) {
+        (window as any).FB.logout(() => {
+            initSdk(requiredId);
+            setTimeout(() => handleFacebookLogin(target), 500);
+        });
+    } else {
+        if (currentAppId !== requiredId) initSdk(requiredId);
+        setTimeout(() => handleFacebookLogin(target), 200);
+    }
   };
 
   const handleFacebookLogin = (target: 'source' | 'destination') => {
     if (!isSdkLoaded) return;
     setIsLoadingAuth(true);
-    let scope = target === 'source' ? (migrationMode === 'PROFILE_TO_PAGE' ? 'public_profile,user_posts' : 'public_profile,pages_show_list,pages_read_engagement') : 'public_profile,pages_manage_posts,publish_pages,pages_show_list';
     
+    // Explicitly define scopes as an array to avoid any accidental string includes
+    let scopeArray: string[] = ['public_profile'];
+    
+    if (target === 'source') {
+        if (migrationMode === 'PROFILE_TO_PAGE') {
+            scopeArray.push('user_posts');
+        } else {
+            scopeArray.push('pages_show_list');
+            scopeArray.push('pages_read_engagement');
+        }
+    } else {
+        // DESTINATION
+        scopeArray.push('pages_show_list');
+        scopeArray.push('pages_read_engagement');
+        scopeArray.push('pages_manage_posts');
+    }
+
+    const finalScope = scopeArray.join(',');
+    
+    // Using 'rerequest' and 'reauthenticate' to force clean session
     window.FB.login((response: FacebookLoginStatus) => {
         if (response.status === 'connected' && response.authResponse) {
             fetchRealData(response.authResponse.accessToken, target);
         } else {
             setIsLoadingAuth(false);
-            setError(lang === 'pl' ? "Logowanie przerwane." : "Login failed.");
+            const errorMsg = lang === 'pl' 
+              ? "Błąd logowania. Upewnij się, że zaakceptowałeś wszystkie wymagane uprawnienia." 
+              : "Login failed. Please ensure you accepted all required permissions.";
+            setError(errorMsg);
         }
-    }, { scope, auth_type: 'reauthenticate' });
+    }, { 
+        scope: finalScope, 
+        auth_type: 'rerequest',
+        return_scopes: true 
+    });
   };
 
   const fetchRealData = async (token: string, target: 'source' | 'destination') => {
@@ -253,14 +288,9 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* Language Switcher */}
       <div className="flex gap-3 mb-6 justify-center">
         {(['en', 'pl', 'de'] as Language[]).map(l => (
-          <button 
-            key={l} 
-            onClick={() => setLang(l)} 
-            className={`text-xs font-bold uppercase ${lang === l ? 'text-facebook-blue' : 'text-gray-300'}`}
-          >
+          <button key={l} onClick={() => setLang(l)} className={`text-xs font-bold uppercase transition-colors ${lang === l ? 'text-facebook-blue' : 'text-gray-300 hover:text-gray-500'}`}>
             {l}
           </button>
         ))}
@@ -268,25 +298,25 @@ const App: React.FC = () => {
 
       <div className="mb-6 p-1 bg-gray-100 rounded-lg flex">
         <button 
-          onClick={() => { setMigrationMode('PROFILE_TO_PAGE'); setOldConnected(false); }}
+          onClick={() => { setMigrationMode('PROFILE_TO_PAGE'); setOldConnected(false); setNewConnected(false); }}
           className={`flex-1 py-2 text-[10px] font-bold rounded-md transition-all ${migrationMode === 'PROFILE_TO_PAGE' ? 'bg-white shadow text-blue-600' : 'text-gray-500'}`}
         >
           {t.profileToPage}
         </button>
         <button 
-          onClick={() => { setMigrationMode('PAGE_TO_PAGE'); setOldConnected(false); }}
+          onClick={() => { setMigrationMode('PAGE_TO_PAGE'); setOldConnected(false); setNewConnected(false); }}
           className={`flex-1 py-2 text-[10px] font-bold rounded-md transition-all ${migrationMode === 'PAGE_TO_PAGE' ? 'bg-white shadow text-blue-600' : 'text-gray-500'}`}
         >
           {t.pageToPage}
         </button>
       </div>
 
-      {error && <div className="mb-4 p-3 bg-red-50 text-red-600 text-xs rounded border border-red-100">{error}</div>}
+      {error && <div className="mb-4 p-3 bg-red-50 text-red-600 text-xs rounded border border-red-100 whitespace-pre-wrap animate-pulse">{error}</div>}
       
       <div className="space-y-4">
-          <div className="p-4 border rounded-xl flex justify-between items-center bg-gray-50">
+          <div className="p-4 border rounded-xl flex justify-between items-center bg-gray-50 hover:bg-white transition-colors">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 overflow-hidden">
+                <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 overflow-hidden border">
                   {oldConnected ? <img src={currentUser.avatar} className="w-full h-full object-cover" /> : <i className="fas fa-sign-out-alt"></i>}
                 </div>
                 <div>
@@ -294,7 +324,16 @@ const App: React.FC = () => {
                   <div className="font-bold text-sm truncate max-w-[120px]">{oldConnected ? currentUser.name : t.notConnected}</div>
                 </div>
               </div>
-              {!oldConnected ? <Button onClick={() => mode === 'demo' ? handleConnectOldAccount() : prepareConnection('source')} loadingText={t.processing}>{t.connect}</Button> : <i className="fas fa-check-circle text-green-500"></i>}
+              {!oldConnected ? (
+                <Button onClick={() => mode === 'demo' ? handleConnectOldAccount() : prepareConnection('source')} loadingText={t.processing}>
+                  {t.connect}
+                </Button>
+              ) : (
+                <div className="flex items-center gap-2">
+                    <i className="fas fa-check-circle text-green-500"></i>
+                    <button onClick={() => setOldConnected(false)} className="text-[10px] text-gray-400 hover:text-red-500">Reset</button>
+                </div>
+              )}
           </div>
 
           <div className="flex justify-center -my-2 relative z-10">
@@ -303,9 +342,9 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className="p-4 border rounded-xl flex justify-between items-center bg-gray-50">
+          <div className="p-4 border rounded-xl flex justify-between items-center bg-gray-50 hover:bg-white transition-colors">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center text-green-600 overflow-hidden">
+                <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center text-green-600 overflow-hidden border">
                   {newConnected ? <img src={destinationUser.avatar} className="w-full h-full object-cover" /> : <i className="fas fa-sign-in-alt"></i>}
                 </div>
                 <div>
@@ -313,16 +352,27 @@ const App: React.FC = () => {
                   <div className="font-bold text-sm truncate max-w-[120px]">{newConnected ? destinationUser.name : t.notConnected}</div>
                 </div>
               </div>
-              {!newConnected ? <Button disabled={!oldConnected && mode === 'live'} onClick={() => mode === 'demo' ? handleConnectNewAccount() : prepareConnection('destination')} loadingText={t.processing}>{t.connect}</Button> : <i className="fas fa-check-circle text-green-500"></i>}
+              {!newConnected ? (
+                <Button disabled={!oldConnected && mode === 'live'} onClick={() => mode === 'demo' ? handleConnectNewAccount() : prepareConnection('destination')} loadingText={t.processing}>
+                  {t.connect}
+                </Button>
+              ) : (
+                <div className="flex items-center gap-2">
+                    <i className="fas fa-check-circle text-green-500"></i>
+                    <button onClick={() => setNewConnected(false)} className="text-[10px] text-gray-400 hover:text-red-500">Reset</button>
+                </div>
+              )}
           </div>
       </div>
 
-      <Button fullWidth disabled={!oldConnected || !newConnected} className="mt-8 py-3 shadow-lg" onClick={() => setStep(AppStep.FILTER_INPUT)} loadingText={t.processing}>{t.startFiltering}</Button>
+      <Button fullWidth disabled={!oldConnected || !newConnected} className="mt-8 py-3 shadow-lg" onClick={() => setStep(AppStep.FILTER_INPUT)} loadingText={t.processing}>
+        {t.startFiltering}
+      </Button>
 
       {showPageSelector && (
-          <div className="absolute inset-0 bg-white p-6 z-50 rounded-xl overflow-y-auto">
-              <h3 className="font-bold mb-4 flex items-center gap-2">
-                <i className="fas fa-flag text-blue-600"></i> {t.selectPage}
+          <div className="absolute inset-0 bg-white p-6 z-50 rounded-xl overflow-y-auto shadow-2xl animate-in fade-in zoom-in duration-200">
+              <h3 className="font-bold mb-4 flex items-center gap-2 text-facebook-blue">
+                <i className="fas fa-flag"></i> {t.selectPage}
               </h3>
               <div className="space-y-2">
                 {managedPages.map(page => (
@@ -332,7 +382,9 @@ const App: React.FC = () => {
                     </button>
                 ))}
               </div>
-              <Button variant="ghost" fullWidth className="mt-4" onClick={() => setShowPageSelector(false)} loadingText={t.processing}>{t.cancel}</Button>
+              <Button variant="ghost" fullWidth className="mt-4" onClick={() => setShowPageSelector(false)}>
+                {t.cancel}
+              </Button>
           </div>
       )}
     </div>
@@ -346,32 +398,43 @@ const App: React.FC = () => {
               <h2 className="text-xl font-bold mb-4">{t.filterHeading}</h2>
               <p className="text-xs text-gray-500 mb-6">{t.filterSubheading}</p>
               <textarea 
-                className="w-full p-4 rounded-xl border mb-4 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none min-h-[100px]" 
+                className="w-full p-4 rounded-xl border mb-4 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none min-h-[120px]" 
                 placeholder={t.filterPlaceholder}
                 value={filterText} 
                 onChange={e => setFilterText(e.target.value)} 
               />
-              <Button fullWidth onClick={handleAnalyze} isLoading={isFiltering} icon={<i className="fas fa-magic"></i>} loadingText={t.processing}>{t.analyzePosts}</Button>
-              <Button variant="ghost" fullWidth className="mt-2" onClick={() => setStep(AppStep.LOGIN)} loadingText={t.processing}>{t.back}</Button>
+              <Button fullWidth onClick={handleAnalyze} isLoading={isFiltering} icon={<i className="fas fa-magic"></i>}>
+                {t.analyzePosts}
+              </Button>
+              <Button variant="ghost" fullWidth className="mt-2" onClick={() => setStep(AppStep.LOGIN)}>
+                {t.back}
+              </Button>
           </div>
       )}
       {step === AppStep.REVIEW && (
           <div className="max-w-4xl mx-auto py-8">
               <div className="flex justify-between items-center mb-6 px-4 md:px-0">
                 <h2 className="text-2xl font-bold">{t.reviewHeading}</h2>
-                <div className="text-sm font-medium text-blue-600 bg-blue-50 px-3 py-1 rounded-full">
+                <div className="text-sm font-medium text-blue-600 bg-blue-50 px-4 py-1.5 rounded-full border border-blue-100">
                   {t.selected}: {selectedPostIds.size}
                 </div>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 px-4 md:px-0">
-                  {filteredPosts.map(p => <PostCard key={p.id} post={p} isSelected={selectedPostIds.has(p.id)} onToggle={id => {
-                      const n = new Set(selectedPostIds);
-                      n.has(id) ? n.delete(id) : n.add(id);
-                      setSelectedPostIds(n);
-                  }} />)}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 px-4 md:px-0">
+                  {filteredPosts.map(p => (
+                    <PostCard 
+                      key={p.id} 
+                      post={p} 
+                      isSelected={selectedPostIds.has(p.id)} 
+                      onToggle={id => {
+                        const n = new Set(selectedPostIds);
+                        n.has(id) ? n.delete(id) : n.add(id);
+                        setSelectedPostIds(n);
+                      }} 
+                    />
+                  ))}
               </div>
               <div className="fixed bottom-8 left-1/2 -translate-x-1/2 w-full max-w-xs px-4">
-                <Button fullWidth className="shadow-2xl" onClick={() => { setEditablePosts(filteredPosts.filter(p => selectedPostIds.has(p.id))); setStep(AppStep.EDIT_PREVIEW); }} loadingText={t.processing}>
+                <Button fullWidth className="shadow-2xl h-14" onClick={() => { setEditablePosts(filteredPosts.filter(p => selectedPostIds.has(p.id))); setStep(AppStep.EDIT_PREVIEW); }}>
                   {t.next} ({selectedPostIds.size})
                 </Button>
               </div>
@@ -384,17 +447,21 @@ const App: React.FC = () => {
                 <div key={p.id} className="p-4 bg-white rounded-xl shadow-sm border overflow-hidden">
                   <div className="text-[10px] text-gray-400 font-bold mb-2 uppercase tracking-tighter">{t.originalDate}: {p.date}</div>
                   <textarea 
-                    className="w-full text-sm border-none focus:ring-0 p-0 resize-none min-h-[80px]" 
+                    className="w-full text-sm border-none focus:ring-0 p-0 resize-none min-h-[100px] text-gray-700" 
                     rows={4} 
                     defaultValue={p.content} 
                     onChange={e => p.content = e.target.value} 
                   />
-                  {p.imageUrl && <div className="mt-2 rounded-lg overflow-hidden h-40 bg-gray-100"><img src={p.imageUrl} className="w-full h-full object-cover" /></div>}
+                  {p.imageUrl && <div className="mt-2 rounded-lg overflow-hidden h-48 bg-gray-50 border"><img src={p.imageUrl} className="w-full h-full object-cover" /></div>}
                 </div>
               ))}
-              <div className="pt-6">
-                <Button fullWidth onClick={handleStartMigration} icon={<i className="fas fa-rocket"></i>} loadingText={t.processing}>{t.publishButton}</Button>
-                <Button variant="ghost" fullWidth className="mt-2" onClick={() => setStep(AppStep.REVIEW)} loadingText={t.processing}>{t.backToReview}</Button>
+              <div className="pt-6 space-y-3">
+                <Button fullWidth onClick={handleStartMigration} icon={<i className="fas fa-rocket"></i>} className="h-14">
+                  {t.publishButton}
+                </Button>
+                <Button variant="ghost" fullWidth onClick={() => setStep(AppStep.REVIEW)}>
+                  {t.backToReview}
+                </Button>
               </div>
           </div>
       )}
@@ -409,7 +476,7 @@ const App: React.FC = () => {
               <div className="h-3 w-full bg-gray-100 rounded-full overflow-hidden mb-6">
                 <div className="h-full bg-facebook-blue transition-all duration-500 shadow-[0_0_10px_rgba(24,119,242,0.5)]" style={{width: `${migrationProgress}%`}}></div>
               </div>
-              <div ref={logContainerRef} className="text-left bg-gray-50 p-4 rounded-xl border max-h-60 overflow-y-auto space-y-2 text-[11px] font-mono">
+              <div ref={logContainerRef} className="text-left bg-gray-50 p-4 rounded-xl border max-h-60 overflow-y-auto space-y-2 text-[11px] font-mono scroll-smooth">
                   {migrationLog.map((l, i) => (
                     <div key={i} className="flex justify-between items-center border-b border-gray-100 pb-1">
                       <span className="truncate max-w-[200px] text-gray-600">{l.contentPreview}</span>
@@ -422,8 +489,8 @@ const App: React.FC = () => {
           </div>
       )}
       {step === AppStep.COMPLETED && (
-          <div className="max-w-md mx-auto text-center mt-20 p-10 bg-white rounded-2xl shadow-2xl border">
-              <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto text-green-500 text-4xl mb-6">
+          <div className="max-w-md mx-auto text-center mt-20 p-10 bg-white rounded-2xl shadow-2xl border animate-in zoom-in duration-300">
+              <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto text-green-500 text-4xl mb-6 shadow-inner">
                 <i className="fas fa-check"></i>
               </div>
               <h2 className="text-3xl font-bold text-gray-800 mb-2">{t.success}</h2>
@@ -432,7 +499,9 @@ const App: React.FC = () => {
                 setOldConnected(false);
                 setNewConnected(false);
                 setStep(AppStep.LOGIN);
-              }} loadingText={t.processing}>{t.startOver}</Button>
+              }}>
+                {t.startOver}
+              </Button>
           </div>
       )}
     </div>
